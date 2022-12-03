@@ -1,4 +1,4 @@
-module mtransport
+module github.com/ym123123/mtransport
 
 go 1.19
 
