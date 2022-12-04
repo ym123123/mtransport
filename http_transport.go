@@ -18,6 +18,7 @@ import (
 	transport "go-micro.dev/v4/transport"
 	maddr "go-micro.dev/v4/util/addr"
 	"go-micro.dev/v4/util/buf"
+	"go-micro.dev/v4/util/log"
 	mnet "go-micro.dev/v4/util/net"
 	mls "go-micro.dev/v4/util/tls"
 	"golang.org/x/net/http2"
@@ -89,7 +90,9 @@ func (h *StreamSocket) Close() error {
 
 func (h *StreamSocket) Send(m *transport.Message) error {
 	var msg pb.Message
-
+	for k, v := range m.Header {
+		log.Infof("key : %s val : %s", k, v)
+	}
 	msg.Headers = m.Header
 	msg.Body = m.Body
 	return h.conn.WriteJSON(&msg)
