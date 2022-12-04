@@ -14,8 +14,6 @@ import (
 	"time"
 
 	ws "github.com/gorilla/websocket"
-	"github.com/wonderivan/logger"
-	pb "github.com/ym123123/mtransport/proto"
 	transport "go-micro.dev/v4/transport"
 	maddr "go-micro.dev/v4/util/addr"
 	"go-micro.dev/v4/util/buf"
@@ -73,44 +71,67 @@ type httpTransportSocket struct {
 }
 
 type StreamSocket struct {
-	conn *ws.Conn
+	conn    *ws.Conn
+	addr    string
+	headers map[string]string
+	secure  bool
 }
 
 func (h *StreamSocket) Local() string {
-	return h.conn.LocalAddr().String()
+	if h.conn != nil {
+		return h.conn.LocalAddr().String()
+	} else {
+		return h.addr
+	}
 }
-
 func (h *StreamSocket) Remote() string {
-	return h.conn.RemoteAddr().String()
+	if h.conn != nil {
+		return h.conn.RemoteAddr().String()
+	} else {
+		return h.addr
+	}
 }
 
 func (h *StreamSocket) Close() error {
-	return h.conn.Close()
+	if h.conn != nil {
+		return h.conn.Close()
+	}
+	return nil
 }
 
 func (h *StreamSocket) Send(m *transport.Message) error {
-	var msg pb.Message
-	for k, v := range m.Header {
-		logger.Info("key : %s val : %s", k, v)
+	if h.conn == nil {
+		header := make(http.Header)
+		for k, v := range m.Header {
+			header.Add(k, v)
+		}
+		conn, err := dialStream(h.secure, h.addr, header)
+		if err != nil {
+			return err
+		}
+		h.headers = m.Header
+		h.conn = conn
 	}
-	msg.Headers = m.Header
-	msg.Body = m.Body
-	return h.conn.WriteJSON(&msg)
+
+	return h.conn.WriteMessage(ws.BinaryMessage, m.Body)
 }
 
 func (h *StreamSocket) Recv(m *transport.Message) error {
-	if m == nil {
+	if m == nil || h.conn == nil {
 		return errors.New("message is null")
 	}
 
-	var req pb.Message
-	if err := h.conn.ReadJSON(&req); err != nil {
+	m.Header = h.headers
+	t, body, err := h.conn.ReadMessage()
+	if err != nil {
 		return err
 	}
 
-	m.Header = req.Headers
-	m.Body = req.Body
-	return nil
+	if t == ws.BinaryMessage {
+		m.Body = body
+		return nil
+	}
+	return errors.New("message type not found")
 }
 
 type httpTransportListener struct {
@@ -534,7 +555,11 @@ func (h *httpTransportListener) Accept(fn func(transport.Socket)) error {
 			http.Error(w, err.Error(), 404)
 			return
 		}
-		fn(&StreamSocket{conn: conn})
+		headers := make(map[string]string)
+		for k, v := range r.Header {
+			headers[k] = v[0]
+		}
+		fn(&StreamSocket{conn: conn, headers: headers})
 	})
 
 	// get optional handlers
@@ -561,14 +586,14 @@ func (h *httpTransportListener) Accept(fn func(transport.Socket)) error {
 	return srv.Serve(h.listener)
 }
 
-func dialStream(secure bool, addr string) (transport.Client, error) {
+func dialStream(secure bool, addr string, header http.Header) (*ws.Conn, error) {
 	schema := "ws"
 	if secure {
 		schema = "wss"
 	}
 
-	conn, _, err := ws.DefaultDialer.Dial(fmt.Sprintf("%s://%s/stream", schema, addr), nil)
-	return &StreamSocket{conn: conn}, err
+	conn, _, err := ws.DefaultDialer.Dial(fmt.Sprintf("%s://%s/stream", schema, addr), header)
+	return conn, err
 }
 
 func (h *httpTransport) Dial(addr string, opts ...transport.DialOption) (transport.Client, error) {
@@ -581,7 +606,7 @@ func (h *httpTransport) Dial(addr string, opts ...transport.DialOption) (transpo
 	}
 
 	if dopts.Stream {
-		return dialStream(h.opts.Secure, addr)
+		return &StreamSocket{addr: addr, secure: h.opts.Secure}, nil
 	}
 	var conn net.Conn
 	var err error
